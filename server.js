@@ -1,122 +1,158 @@
 const express = require('express');
-const cors = require('cors');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const QRCode = require('qrcode');
+const pino = require('pino');
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
+const PORT = process.env.PORT || 10000;
+
 let sock;
-let latestQR = '';
+let qrCodeImage = '';
+let isConnected = false;
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    
+
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false
+        printQRInTerminal: false,
+        logger: pino({ level: 'silent' })
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
+
         if (qr) {
-            latestQR = qr;
-            console.log('⚡ تم توليد رمز QR جديد، افتح الرابط /qr في المتصفح لمسحه.');
+            console.log('⚡ تم توليد QR Code جديد');
+            qrCodeImage = await QRCode.toDataURL(qr);
+            isConnected = false;
         }
-        
+
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) connectToWhatsApp();
+            const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
+            console.log('⚠️ انقطع الاتصال، جاري إعادة الاتصال:', shouldReconnect);
+            isConnected = false;
+            qrCodeImage = '';
+            if (shouldReconnect) {
+                connectToWhatsApp();
+            }
         } else if (connection === 'open') {
-            latestQR = '';
-            console.log('✅ تم الاتصال بواتساب الشركة بنجاح وجاهز لإرسال الرسائل!');
+            console.log('✅ تم الاتصال بواتساب بنجاح!');
+            isConnected = true;
+            qrCodeImage = '';
         }
     });
 }
 
-// صفحة عرض الـ QR كصورة واضحة ومباشرة
-app.get('/qr', (req, res) => {
-    if (!latestQR) {
-        return res.send(`
-            <div style="text-align: center; font-family: sans-serif; padding: 50px;">
-                <h2>✅ السيرفر متصل بالواتساب بالفعل أو جاري التجهيز...</h2>
-                <p>إذا لم تكن متصلاً، انتظر بضع ثوانٍ وأعد تحديث الصفحة (Refresh).</p>
-            </div>
+// بدء الاتصال عند تشغيل السيرفر
+connectToWhatsApp();
+
+// 1. الصفحة الرئيسية: عرض الـ QR Code أو حالة الاتصال
+app.get('/', (req, res) => {
+    if (isConnected) {
+        res.send(`
+            <!DOCTYPE html>
+            <html lang="ar" dir="rtl">
+            <head>
+                <meta charset="UTF-8">
+                <title>حالة خدمة الواتساب</title>
+                <style>
+                    body { font-family: system-ui, sans-serif; text-align: center; padding-top: 50px; background-color: #f4f7f6; }
+                    .card { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+                    h1 { color: #2e7d32; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h1>✅ الواتساب متصل بنجاح!</h1>
+                    <p>السيرفر يعمل الآن وجاهز لاستقبال طلبات إرسال الـ OTP.</p>
+                </div>
+            </body>
+            </html>
+        `);
+    } else if (qrCodeImage) {
+        res.send(`
+            <!DOCTYPE html>
+            <html lang="ar" dir="rtl">
+            <head>
+                <meta charset="UTF-8">
+                <title>ربط الواتساب</title>
+                <style>
+                    body { font-family: system-ui, sans-serif; text-align: center; padding-top: 40px; background-color: #f4f7f6; }
+                    .card { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+                    img { border: 2px solid #ddd; border-radius: 8px; padding: 10px; margin-top: 15px; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h2>📱 امسح رمز الـ QR للربط بالواتساب</h2>
+                    <img src="${qrCodeImage}" alt="QR Code" />
+                    <p style="color: #555; margin-top: 15px;">افتح واتساب في هاتفك > الأجهزة المرتبطة > ربط جهاز.</p>
+                </div>
+                <script>
+                    // إعادة تحميل الصفحة تلقائياً كل 5 ثوانٍ للتحقق من الاتصال
+                    setTimeout(() => { location.reload(); }, 5000);
+                </script>
+            </body>
+            </html>
+        `);
+    } else {
+        res.send(`
+            <!DOCTYPE html>
+            <html lang="ar" dir="rtl">
+            <head>
+                <meta charset="UTF-8">
+                <title>جاري التحميل...</title>
+                <style>
+                    body { font-family: system-ui, sans-serif; text-align: center; padding-top: 50px; background-color: #f4f7f6; }
+                </style>
+            </head>
+            <body>
+                <h2>⏳ جاري تجهيز رمز الـ QR...</h2>
+                <p>يرجى الانتظار بضع ثوانٍ وسيقوم المتصفح بالتحديث تلقائياً.</p>
+                <script>
+                    setTimeout(() => { location.reload(); }, 3000);
+                </script>
+            </body>
+            </html>
         `);
     }
-
-    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(latestQR)}`;
-
-    res.send(`
-        <!DOCTYPE html>
-        <html lang="ar" dir="rtl">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>مسح رمز الواتساب</title>
-            <style>
-                body { font-family: system-ui, sans-serif; background: #f4f6f8; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-                .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; max-width: 400px; }
-                img { border: 8px solid #25D366; border-radius: 12px; margin: 20px 0; }
-                h2 { color: #128C7E; margin-top: 0; }
-                p { color: #555; font-size: 14px; line-height: 1.6; }
-            </style>
-        </head>
-        <body>
-            <div class="card">
-                <h2>امسح الرمز من واتساب الشركة</h2>
-                <p>افتح الواتساب 👈 الأجهزة المرتبطة 👈 ربط جهاز 👈 وجه الكاميرا للشاشة:</p>
-                <img src="${qrImageUrl}" alt="WhatsApp QR Code" />
-                <p style="font-size:12px; color:#888;">يتحدث الرمز تلقائياً عند إعادة تحميل الصفحة.</p>
-            </div>
-        </body>
-        </html>
-    `);
 });
 
-// استقبال طلبات إرسال الـ OTP
+// 2. API لإرسال كود OTP
 app.post('/send-otp', async (req, res) => {
-    const { phone, otp, lang } = req.body;
-
-    if (!phone || !otp) {
-        return res.status(400).json({ success: false, message: 'رقم الهاتف والرمز مطلوبان' });
-    }
-
-    let formattedPhone = phone.replace(/[^0-9]/g, '');
-    if (formattedPhone.startsWith('05')) {
-        formattedPhone = '966' + formattedPhone.substring(1);
-    } else if (formattedPhone.startsWith('5')) {
-        formattedPhone = '966' + formattedPhone;
-    }
-    
-    const jid = `${formattedPhone}@s.whatsapp.net`;
-
-    const messages = {
-        ar: `🚚 *شركة المسار المميز للخدمات اللوجستية*\n\nرمز التحقق الخاص بك هو: *${otp}*\n\nيرجى إدخاله في التطبيق لإكمال تسجيل الدخول. لا تشارك هذا الرمز مع أي شخص.`,
-        en: `🚚 *Al-Masar Al-Mumayaz Logistics*\n\nYour verification code is: *${otp}*\n\nPlease enter it in the app to complete login. Do not share this code with anyone.`,
-        ur: `🚚 *المسار المميز لاجسٹکس*\n\nآپ کا تصدیقی کوڈ ہے: *${otp}*`,
-        hi: `🚚 *अल-मसार अल-मुमय्याज़ लॉजिस्टिक्स*\n\nआपका सत्यापन कोड है: *${otp}*`,
-        bn: `🚚 *আল-মাসার আল-মুমায়্যাজ লজিস্টিকস*\n\nআপনার যাচাইকরণ কোড হল: *${otp}*`
-    };
-
-    const textMessage = messages[lang] || messages['ar'];
-
     try {
-        if (!sock) {
-            return res.status(500).json({ success: false, message: 'سيرفر الواتساب غير متصل حالياً' });
+        const { phone, otp, message } = req.body;
+
+        if (!isConnected) {
+            return res.status(400).json({ success: false, error: 'الواتساب غير متصل حالياً' });
         }
-        await sock.sendMessage(jid, { text: textMessage });
-        res.json({ success: true, message: 'تم إرسال OTP بنجاح عبر الواتساب' });
+
+        if (!phone) {
+            return res.status(400).json({ success: false, error: 'رقم الهاتف (phone) مطلوب' });
+        }
+
+        // تنسيق رقم الهاتف ليناسب WhatsApp JID
+        let formattedPhone = phone.toString().replace(/[^0-9]/g, '');
+        if (!formattedPhone.endsWith('@s.whatsapp.net')) {
+            formattedPhone = `${formattedPhone}@s.whatsapp.net`;
+        }
+
+        const textToSend = message || `رمز التحقق الخاص بك هو: ${otp}`;
+
+        await sock.sendMessage(formattedPhone, { text: textToSend });
+
+        return res.json({ success: true, message: 'تم إرسال الرسالة بنجاح' });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        console.error('خطأ أثناء إرسال الرسالة:', error);
+        return res.status(500).json({ success: false, error: error.message });
     }
 });
 
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-    connectToWhatsApp();
+    console.log(`Server running on port ${PORT}`);
 });
