@@ -1,6 +1,5 @@
 const express = require('express');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const QRCode = require('qrcode');
 const pino = require('pino');
 
 const app = express();
@@ -9,7 +8,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
 let sock;
-let qrCodeImage = '';
+let rawQrCode = '';
 let isConnected = false;
 
 async function connectToWhatsApp() {
@@ -28,7 +27,7 @@ async function connectToWhatsApp() {
 
         if (qr) {
             console.log('⚡ تم توليد QR Code جديد');
-            qrCodeImage = await QRCode.toDataURL(qr);
+            rawQrCode = qr;
             isConnected = false;
         }
 
@@ -36,14 +35,14 @@ async function connectToWhatsApp() {
             const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
             console.log('⚠️ انقطع الاتصال، جاري إعادة الاتصال:', shouldReconnect);
             isConnected = false;
-            qrCodeImage = '';
+            rawQrCode = '';
             if (shouldReconnect) {
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
             console.log('✅ تم الاتصال بواتساب بنجاح!');
             isConnected = true;
-            qrCodeImage = '';
+            rawQrCode = '';
         }
     });
 }
@@ -74,7 +73,9 @@ app.get('/', (req, res) => {
             </body>
             </html>
         `);
-    } else if (qrCodeImage) {
+    } else if (rawQrCode) {
+        // إنشاء رابط صورة الـ QR تلقائياً
+        const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(rawQrCode)}`;
         res.send(`
             <!DOCTYPE html>
             <html lang="ar" dir="rtl">
@@ -90,11 +91,10 @@ app.get('/', (req, res) => {
             <body>
                 <div class="card">
                     <h2>📱 امسح رمز الـ QR للربط بالواتساب</h2>
-                    <img src="${qrCodeImage}" alt="QR Code" />
+                    <img src="${qrApiUrl}" alt="QR Code" />
                     <p style="color: #555; margin-top: 15px;">افتح واتساب في هاتفك > الأجهزة المرتبطة > ربط جهاز.</p>
                 </div>
                 <script>
-                    // إعادة تحميل الصفحة تلقائياً كل 5 ثوانٍ للتحقق من الاتصال
                     setTimeout(() => { location.reload(); }, 5000);
                 </script>
             </body>
@@ -136,7 +136,6 @@ app.post('/send-otp', async (req, res) => {
             return res.status(400).json({ success: false, error: 'رقم الهاتف (phone) مطلوب' });
         }
 
-        // تنسيق رقم الهاتف ليناسب WhatsApp JID
         let formattedPhone = phone.toString().replace(/[^0-9]/g, '');
         if (!formattedPhone.endsWith('@s.whatsapp.net')) {
             formattedPhone = `${formattedPhone}@s.whatsapp.net`;
