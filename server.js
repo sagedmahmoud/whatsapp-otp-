@@ -17,7 +17,9 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' })
+        logger: pino({ level: 'silent' }),
+        keepAliveIntervalMs: 15000, // إرسال نبضات كل 15 ثانية لمنع انقطاع الجلسة
+        connectTimeoutMs: 60000
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -32,15 +34,24 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
-            console.log('⚠️ انقطع الاتصال، جاري إعادة الاتصال:', shouldReconnect);
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = (statusCode !== DisconnectReason.loggedOut);
+            
+            console.log(`⚠️ انقطع الاتصال (كود ${statusCode}). جاري إعادة الاتصال تلقائياً:`, shouldReconnect);
+            
             isConnected = false;
             rawQrCode = '';
+
             if (shouldReconnect) {
-                connectToWhatsApp();
+                // إعادة الاتصال تلقائياً بعد 3 ثوانٍ
+                setTimeout(() => {
+                    connectToWhatsApp();
+                }, 3000);
+            } else {
+                console.log('❌ تم تسجيل الخروج من الهاتف، يرجى إعادة مسح الـ QR Code.');
             }
         } else if (connection === 'open') {
-            console.log('✅ تم الاتصال بواتساب بنجاح!');
+            console.log('✅ تم الاتصال بواتساب بنجاح وهو جاهز للعمل!');
             isConnected = true;
             rawQrCode = '';
         }
@@ -50,7 +61,12 @@ async function connectToWhatsApp() {
 // بدء الاتصال عند تشغيل السيرفر
 connectToWhatsApp();
 
-// 1. الصفحة الرئيسية: عرض الـ QR Code أو حالة الاتصال
+// 1. مسار الصحة (Health Check) لإبقاء السيرفر مستيقظاً بواسطة UptimeRobot
+app.get('/ping', (req, res) => {
+    res.status(200).send('PONG - Server is Alive');
+});
+
+// 2. الصفحة الرئيسية: عرض الـ QR Code أو حالة الاتصال
 app.get('/', (req, res) => {
     if (isConnected) {
         res.send(`
@@ -68,13 +84,12 @@ app.get('/', (req, res) => {
             <body>
                 <div class="card">
                     <h1>✅ الواتساب متصل بنجاح!</h1>
-                    <p>السيرفر يعمل الآن وجاهز لاستقبال طلبات إرسال الـ OTP.</p>
+                    <p>السيرفر يعمل الآن وجاهز لاستقبال واستبدال طلبات الرسائل.</p>
                 </div>
             </body>
             </html>
         `);
     } else if (rawQrCode) {
-        // إنشاء رابط صورة الـ QR تلقائياً
         const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(rawQrCode)}`;
         res.send(`
             <!DOCTYPE html>
@@ -112,7 +127,7 @@ app.get('/', (req, res) => {
                 </style>
             </head>
             <body>
-                <h2>⏳ جاري تجهيز رمز الـ QR...</h2>
+                <h2>⏳ جاري تجهيز اتصال السيرفر بـ واتساب...</h2>
                 <p>يرجى الانتظار بضع ثوانٍ وسيقوم المتصفح بالتحديث تلقائياً.</p>
                 <script>
                     setTimeout(() => { location.reload(); }, 3000);
@@ -123,13 +138,13 @@ app.get('/', (req, res) => {
     }
 });
 
-// 2. API لإرسال كود OTP
+// 3. API لإرسال الرسائل من Apps Script
 app.post('/send-otp', async (req, res) => {
     try {
         const { phone, otp, message } = req.body;
 
         if (!isConnected) {
-            return res.status(400).json({ success: false, error: 'الواتساب غير متصل حالياً' });
+            return res.status(503).json({ success: false, error: 'الواتساب غير متصل حالياً بالسيرفر' });
         }
 
         if (!phone) {
@@ -145,13 +160,14 @@ app.post('/send-otp', async (req, res) => {
 
         await sock.sendMessage(formattedPhone, { text: textToSend });
 
+        console.log(`✉️ تم إرسال الرسالة بنجاح إلى: ${formattedPhone}`);
         return res.json({ success: true, message: 'تم إرسال الرسالة بنجاح' });
     } catch (error) {
-        console.error('خطأ أثناء إرسال الرسالة:', error);
+        console.error('❌ خطأ أثناء إرسال الرسالة:', error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
 });
