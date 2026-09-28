@@ -1,20 +1,20 @@
 const express = require('express');
 const cors = require('cors');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 let sock;
+let latestQR = '';
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true
+        printQRInTerminal: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -23,20 +23,61 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('\n============== امسح الكود التالي من واتساب جوال الشركة ==============\n');
-            qrcode.generate(qr, { small: true });
-            console.log('\n====================================================================\n');
+            latestQR = qr;
+            console.log('⚡ تم توليد رمز QR جديد، افتح الرابط /qr في المتصفح لمسحه.');
         }
         
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
+            latestQR = '';
             console.log('✅ تم الاتصال بواتساب الشركة بنجاح وجاهز لإرسال الرسائل!');
         }
     });
 }
 
+// صفحة عرض الـ QR كصورة واضحة ومباشرة
+app.get('/qr', (req, res) => {
+    if (!latestQR) {
+        return res.send(`
+            <div style="text-align: center; font-family: sans-serif; padding: 50px;">
+                <h2>✅ السيرفر متصل بالواتساب بالفعل أو جاري التجهيز...</h2>
+                <p>إذا لم تكن متصلاً، انتظر بضع ثوانٍ وأعد تحديث الصفحة (Refresh).</p>
+            </div>
+        `);
+    }
+
+    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(latestQR)}`;
+
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="ar" dir="rtl">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>مسح رمز الواتساب</title>
+            <style>
+                body { font-family: system-ui, sans-serif; background: #f4f6f8; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+                .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; max-width: 400px; }
+                img { border: 8px solid #25D366; border-radius: 12px; margin: 20px 0; }
+                h2 { color: #128C7E; margin-top: 0; }
+                p { color: #555; font-size: 14px; line-height: 1.6; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2>امسح الرمز من واتساب الشركة</h2>
+                <p>افتح الواتساب 👈 الأجهزة المرتبطة 👈 ربط جهاز 👈 وجه الكاميرا للشاشة:</p>
+                <img src="${qrImageUrl}" alt="WhatsApp QR Code" />
+                <p style="font-size:12px; color:#888;">يتحدث الرمز تلقائياً عند إعادة تحميل الصفحة.</p>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+// استقبال طلبات إرسال الـ OTP
 app.post('/send-otp', async (req, res) => {
     const { phone, otp, lang } = req.body;
 
