@@ -1,6 +1,8 @@
 const express = require('express');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
@@ -18,7 +20,7 @@ async function connectToWhatsApp() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        keepAliveIntervalMs: 15000, // إرسال نبضات كل 15 ثانية لمنع انقطاع الجلسة
+        keepAliveIntervalMs: 15000,
         connectTimeoutMs: 60000
     });
 
@@ -28,7 +30,7 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('⚡ تم توليد QR Code جديد');
+            console.log('⚡ تم توليد QR Code جديد وجاهز للمسح');
             rawQrCode = qr;
             isConnected = false;
         }
@@ -37,18 +39,30 @@ async function connectToWhatsApp() {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = (statusCode !== DisconnectReason.loggedOut);
             
-            console.log(`⚠️ انقطع الاتصال (كود ${statusCode}). جاري إعادة الاتصال تلقائياً:`, shouldReconnect);
+            console.log(`⚠️ انقطع الاتصال (كود ${statusCode}). إعادة الاتصال:`, shouldReconnect);
             
             isConnected = false;
             rawQrCode = '';
 
             if (shouldReconnect) {
-                // إعادة الاتصال تلقائياً بعد 3 ثوانٍ
+                // إعادة الاتصال السريع بعد ثانية واحدة
                 setTimeout(() => {
                     connectToWhatsApp();
-                }, 3000);
+                }, 1000);
             } else {
-                console.log('❌ تم تسجيل الخروج من الهاتف، يرجى إعادة مسح الـ QR Code.');
+                console.log('❌ تم تسجيل الخروج من الجهاز (Logged Out). جاري مسح الجلسة القديمة لتوليد QR Code جديد...');
+                
+                // مسح مجلد الجلسة القديم تلقائياً لكي يظهر QR Code جديد فوراً
+                const authFolder = path.join(__dirname, 'auth_info_baileys');
+                if (fs.existsSync(authFolder)) {
+                    fs.rmSync(authFolder, { recursive: true, force: true });
+                    console.log('🗑️ تم حذف مجلد الجلسة القديم بنجاح.');
+                }
+
+                // إعادة المحاولة فوراً لتوليد QR Code جديد
+                setTimeout(() => {
+                    connectToWhatsApp();
+                }, 1000);
             }
         } else if (connection === 'open') {
             console.log('✅ تم الاتصال بواتساب بنجاح وهو جاهز للعمل!');
@@ -61,7 +75,7 @@ async function connectToWhatsApp() {
 // بدء الاتصال عند تشغيل السيرفر
 connectToWhatsApp();
 
-// 1. مسار الصحة (Health Check) لإبقاء السيرفر مستيقظاً بواسطة UptimeRobot
+// 1. مسار الصحة (Health Check)
 app.get('/ping', (req, res) => {
     res.status(200).send('PONG - Server is Alive');
 });
@@ -110,7 +124,7 @@ app.get('/', (req, res) => {
                     <p style="color: #555; margin-top: 15px;">افتح واتساب في هاتفك > الأجهزة المرتبطة > ربط جهاز.</p>
                 </div>
                 <script>
-                    setTimeout(() => { location.reload(); }, 5000);
+                    setTimeout(() => { location.reload(); }, 3000);
                 </script>
             </body>
             </html>
@@ -130,7 +144,7 @@ app.get('/', (req, res) => {
                 <h2>⏳ جاري تجهيز اتصال السيرفر بـ واتساب...</h2>
                 <p>يرجى الانتظار بضع ثوانٍ وسيقوم المتصفح بالتحديث تلقائياً.</p>
                 <script>
-                    setTimeout(() => { location.reload(); }, 3000);
+                    setTimeout(() => { location.reload(); }, 2000);
                 </script>
             </body>
             </html>
@@ -138,7 +152,7 @@ app.get('/', (req, res) => {
     }
 });
 
-// 3. API لإرسال الرسائل من Apps Script
+// 3. API لإرسال الرسائل
 app.post('/send-otp', async (req, res) => {
     try {
         const { phone, otp, message } = req.body;
